@@ -3,9 +3,11 @@ sys.path.append("./")
 sys.path.append("../")
 
 import torch
+import contextlib
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
+import soundfile as sf
 import torchaudio.compliance.kaldi as kaldi
 import librosa
 import hydra
@@ -44,10 +46,11 @@ class InferenceWrapper:
         """Initialize the main model"""
         cfg = DictConfig(yaml.safe_load(open(self.config['model_params']['config_path'])))
         self.model = hydra.utils.instantiate(cfg)
+        cache_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.model.setup_caches(
             max_batch_size=1,
             max_seq_len=2048,
-            dtype=torch.float16,
+            dtype=cache_dtype,
         )
         self.model.to(self.device)
         self.model.eval()
@@ -253,7 +256,12 @@ class InferenceWrapper:
         if delay is not None:
             self.model.set_delay(delay=delay)
         # vc_codes = self.model.infer(src_content_codes, style_vectors, timbre_latents)
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if torch.cuda.is_available()
+            else contextlib.nullcontext()
+        )
+        with autocast_ctx:
             vc_codes = self.model.generate(
                 ref_content_codes=ref_content_codes,
                 ref_audio_codes=ref_audio_codes,
@@ -278,7 +286,8 @@ class InferenceWrapper:
         else:
             out_path = Path(src_path).parent / out_name
         # save output
-        torchaudio.save(out_path, torch.from_numpy(pred_wave).unsqueeze(0), self.sr)
+        # Use soundfile to avoid TorchCodec dependency in torchaudio.save
+        sf.write(str(out_path), pred_wave.astype('float32'), self.sr, subtype='PCM_16')
         print(f"Output saved to {out_path}")
         return pred_wave
 
@@ -343,7 +352,12 @@ class InferenceWrapper:
         self.model.set_delay(delay=delay)
 
         # prefill prompt to kv cache
-        with torch.autocast(device_type="cuda", dtype=torch.float16):
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if torch.cuda.is_available()
+            else contextlib.nullcontext()
+        )
+        with autocast_ctx:
             self.model.prefill_prompt(
                 ref_content_codes,
                 ref_audio_codes,
@@ -523,7 +537,8 @@ class InferenceWrapper:
         else:
             out_path = Path(src_path).parent / out_name
         # save output
-        torchaudio.save(out_path, torch.from_numpy(pred_wave).float().unsqueeze(0), self.sr)
+        # Use soundfile to avoid TorchCodec dependency in torchaudio.save
+        sf.write(str(out_path), pred_wave.astype('float32'), self.sr, subtype='PCM_16')
         print(f"Output saved to {out_path}")
         return pred_wave
 
@@ -546,15 +561,24 @@ if __name__ == "__main__":
     parser.add_argument("--max_seq_frames", type=int, default=768, help="Maximum sequence length in frames")  # only used for streaming
     parser.add_argument("--buffer_frames", type=int, default=32, help="Buffer frames when refilling prompt")  # only used for streaming
     parser.add_argument("--decode_chunk_frames", type=int, default=1, help="Decode chunk size in frames")  # only used for streaming
+    # sampling controls
+    parser.add_argument("--top_p", type=float, default=0.7, help="Nucleus sampling threshold (lower = more deterministic)")
+    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature (lower = more deterministic)")
+    parser.add_argument("--repetition_penalty", type=float, default=1.5, help="Repetition penalty (set 1.0 to disable)")
     args = parser.parse_args()
     config_path = args.config_path
     checkpoint_path = args.checkpoint_path
+    # If CUDA is not available, ignore --compile to avoid CPU compile issues
+    compile_enabled = args.compile and torch.cuda.is_available()
+    if args.compile and not torch.cuda.is_available():
+        print("CUDA is not available; ignoring --compile and running without compilation.")
+
     infer_wrapper = InferenceWrapper(
         config_path,
         checkpoint_path,
-        compile_ar=args.compile,
-        compile_decoder=args.compile if args.simulate_streaming else False,
-        compile_encoder=args.compile if args.simulate_streaming else False,
+        compile_ar=compile_enabled,
+        compile_decoder=compile_enabled if args.simulate_streaming else False,
+        compile_encoder=compile_enabled if args.simulate_streaming else False,
     )
     src_path = args.src_path
     ref_path = args.ref_path
@@ -575,5 +599,13 @@ if __name__ == "__main__":
             decode_chunk_frames=args.decode_chunk_frames,
             delay=args.delay)
     else:
-        vc_wav = infer_wrapper.infer(src_path, ref_path, out_dir, delay=args.delay)
+        vc_wav = infer_wrapper.infer(
+            src_path,
+            ref_path,
+            out_dir,
+            delay=args.delay,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            repetition_penalty=args.repetition_penalty,
+        )
 

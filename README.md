@@ -3,7 +3,7 @@ This repository contains the implementation of StreamVoiceAnon, a real-time voic
 Relevant paper has been submitted to ICASSP 2026.  
 Training code will be released after the paper is accepted.
 
-### Installation
+### Installation (pip)
 ```bash
 git clone https://github.com/Plachtaa/StreamVoiceAnon.git
 cd StreamVoiceAnon
@@ -18,6 +18,27 @@ Note that this is **compulsory** to run inference with RTF < 1.0
 
 Full MacOS support is still under construction.
 
+### Installation (uv)
+If you prefer uv, follow docs/uv-setup.md for a faster, reproducible setup:
+
+```bash
+# 1) Create venv and install deps
+uv venv .venv && source .venv/bin/activate  # PowerShell: .\.venv\Scripts\Activate.ps1
+uv sync                      # base deps
+uv sync --extra gui          # add GUI/VAD extras (optional)
+
+# 2) Install PyTorch (choose one)
+# CPU only:
+uv pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cpu
+# CUDA 12.1 (stable):
+uv pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+# CUDA 12.6 (nightly):
+uv pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu126
+
+# 3) Windows only: Triton for Inductor
+uv pip install triton-windows==3.2.0.post13
+```
+
 ### Download Pretrained Models
 ```bash
 hf download Plachta/StreamVoiceAnon --local-dir pretrained_checkpoints/
@@ -26,23 +47,11 @@ hf download Plachta/StreamVoiceAnon --local-dir pretrained_checkpoints/
 ### Inference
 Offline inference 
 ```bash
-python evaluations/infer_arvc.py \
-    --src_path <path_to_audio> \
-    --ref_path <path_to_audio> \
-    --out_dir <path_to_output_directory> \
-    --delay 2 \  # Specify delay in number of frames (must have)
-    --compile
+python evaluations/infer_arvc.py --src_path <path_to_audio> --ref_path <path_to_audio> --out_dir <path_to_output_directory> --delay 2 --compile
 ```
 Simulated online inference
 ```bash
-python evaluations/infer_arvc.py \
-    --src_path <path_to_audio> \
-    --ref_path <path_to_audio> \
-    --out_dir <path_to_output_directory> \
-    --delay 2 \  # Specify delay in number of frames (must have)
-    --compile \
-    --simulate_streaming \
-    --decode_chunk_frames 1 # how many frames for encoder & vocoder to process each time
+python evaluations/infer_arvc.py --src_path <path_to_audio> --ref_path <path_to_audio> --out_dir <path_to_output_directory> --delay 2 --compile --simulate_streaming --decode_chunk_frames 1
 ```
 This simulates a chunk-by-chunk online inference with specified chunk size. `src_path` (source audio) has no length limit here. `ref_path` (reference audio) will be truncated to some maximum length (if longer than that limit)
 
